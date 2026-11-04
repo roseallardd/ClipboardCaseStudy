@@ -1,0 +1,56 @@
+# Daily Bellhaven CRM sync
+# Lives at .github/workflows/daily-sync.yml in the repo.
+#
+# Each morning it scrapes the Bellhaven website, matches communities to CRM
+# accounts, and adds any NEW proposals to the review queue (decisions.db).
+# It never writes to the CRM: changes only land when a reviewer approves
+# them in the review app.
+#
+# Re-runs are safe: decisions.db remembers every proposal by a stable id,
+# so approved or rejected items are never proposed again. The job commits
+# decisions.db back to the repo so that state persists between runs.
+
+name: Daily Bellhaven CRM sync
+
+on:
+  schedule:
+    # 11:17 UTC = 3:17am Pacific (4:17am during daylight time), before the
+    # sales team starts. Off the top of the hour to avoid GitHub's busy :00 slot.
+    - cron: "17 11 * * *"
+  workflow_dispatch: {}   # also allows a manual "Run workflow" button
+
+permissions:
+  contents: write         # needed to commit decisions.db back
+
+concurrency:
+  group: bellhaven-sync   # never run two syncs at once
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline (scrape, match, queue proposals)
+        env:
+          BH_API_TOKEN: ${{ secrets.BH_API_TOKEN }}
+        run: python pipeline.py
+
+      - name: Save review queue state
+        run: |
+          git config user.name "bellhaven-sync-bot"
+          git config user.email "bellhaven-sync-bot@users.noreply.github.com"
+          git add decisions.db
+          git diff --cached --quiet || git commit -m "Daily sync $(date -u +%F)"
+          git push
